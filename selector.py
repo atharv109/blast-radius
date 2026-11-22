@@ -64,7 +64,9 @@ def import_broken(rel, new_text):
         mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
         loader.exec_module(mod)
         return False
-    except BaseException:
+    except BaseException as ex:
+        if os.environ.get("DEBUG_SEL"):
+            print(f"IMPORT-BROKEN {rel}: {ex!r}", file=sys.stderr)
         return True
 
 
@@ -503,7 +505,12 @@ def main():
                     sel = None
                     break
                 sel |= r
-        except AllError:
+        except AllError as ex:
+            if os.environ.get("DEBUG_SEL"):
+                import traceback
+
+                traceback.print_exc()
+                print(f"ALLERROR on {commit}", file=sys.stderr)
             sel = None
         except Exception as ex:
             print(f"selector error on {commit}: {ex!r}", file=sys.stderr)
