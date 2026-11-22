@@ -236,6 +236,10 @@ def main():
                 for d in DIALECT_DIRS:
                     got.update(to_nums(cover.get(f"{d}/{m}.py", ())))
                 got.update(file_nums.get(f"tests/dialects/test_{m}.py", ()))
+            # Cross-dialect consistency suite (TestDialect) exercises any
+            # dialect's class attributes; import-time lines give it no
+            # per-test coverage of a dialect module.
+            got.update(file_nums.get("tests/dialects/test_dialect.py", ()))
         return got  # numbers
 
     def data_ids(rel):
