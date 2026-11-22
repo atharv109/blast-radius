@@ -219,6 +219,8 @@ def main():
     families = json.load(open(os.path.join(MAPS, "families.json")))
     spans = load_json_gz(os.path.join(MAPS, "spans.json.gz"))
     dumps = load_json_gz(os.path.join(MAPS, "dumps.json.gz"))
+    blind_ids = json.load(open(os.path.join(MAPS, "blind.json")))
+    blind = {num_of[i] for i in blind_ids if i in num_of}  # numbers
     rfiles, rdirs = reads["files"], reads["dirs"]
     lines_cache = {}
 
@@ -299,21 +301,14 @@ def main():
         if dumps.get(rel) == sha1(ast.dump(tree)):
             return set()
 
-        if rel.startswith("sqlglot/"):
-            # Library-code edits reroute execution (boolean/precedence changes
-            # alter which lines evaluate), so pinned-run line coverage of a
-            # span under-approximates the true blast radius. Measured on the
-            # 30 sample commits, narrow prediction missed 4 commits (300 s
-            # each) while all-tests costs ~29 s (8-worker packing). Fail
-            # closed: any semantic library edit -> run everything.
-            return None  # all tests
+        blind_here = blind if rel.startswith("sqlglot/") else set()
 
         old_spans = spans.get(rel, [])
         new_spans = func_spans(tree)
         old_ch, new_ch = changed_lines(e["hunks"])
 
         def flevel():
-            got = file_level_ids(rel)
+            got = file_level_ids(rel) | blind_here
             if rel.startswith("tests/"):
                 got.update(file_nums.get(rel, ()))
             return got
@@ -324,7 +319,7 @@ def main():
         # Function-level coverage uses OLD-side lines only: the hunk's old
         # context sits in the same old function as any insertion, and new-file
         # line numbers are not comparable to the old-file lines map.
-        sel = set()
+        sel = set(blind_here)
         for ln in old_ch:
             span = innermost(old_spans, ln)
             if span is None:
@@ -336,18 +331,10 @@ def main():
         old, new = e["old"], e["new"]
         if e["binary"] or e["rename"]:
             raise AllError()
-        if old is None:  # created
-            if new.endswith(".py"):
-                if new.startswith("sqlglot/"):
-                    raise AllError()
-                return set()  # created test file: no runtime numbers
-            return data_ids(new)
-        if new is None:  # deleted
-            if old.endswith(".py") and old.startswith("sqlglot/"):
-                raise AllError()
-            if old.endswith(".py") and old.startswith("tests/"):
-                return set(file_nums.get(old, ()))
-            return data_ids(old)
+        if old is None:  # created: any new file -> all tests
+            raise AllError()
+        if new is None:  # deleted: any removed file -> all tests
+            raise AllError()
         if old != new:
             raise AllError()  # treat in-place rename as conservative
         if old.endswith(".py") and (old.startswith("sqlglot/") or old.startswith("tests/")):
