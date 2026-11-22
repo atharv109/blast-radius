@@ -8,7 +8,6 @@ RUN mkdir /src && python -c "import tarfile,os,shutil,glob; t=tarfile.open('/tmp
 COPY mapgen/read_audit.py /mapgen/read_audit.py
 COPY mapgen/gen_map.py /mapgen/gen_map.py
 COPY mapgen/run.sh /mapgen/run.sh
-COPY mapgen/read_audit.py /mapgen/read_audit.py
-COPY mapgen/gen_map.py /mapgen/gen_map.py
-COPY mapgen/run.sh /mapgen/run.sh
+COPY mapgen/sitecustomize_mapgen.py /mapgen/sitecustomize_mapgen.py
+COPY mapgen/inline_mp.py /mapgen/inline_mp.py
 CMD ["/bin/sh", "/mapgen/run.sh"]
