@@ -113,6 +113,11 @@ def parse_diff(text):
             if raw.startswith("diff --git "):
                 cur = {"old": None, "new": None, "created": False, "deleted": False,
                        "rename": False, "binary": False, "hunks": []}
+            else:
+                # bare `--- / @@` patch (no diff --git header): same shape, so
+                # a header-less patch still selects, never silently skips
+                cur = {"old": None, "new": None, "created": False, "deleted": False,
+                       "rename": False, "binary": False, "hunks": []}
             in_body = False
         elif cur is None:
             continue
