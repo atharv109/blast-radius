@@ -8,10 +8,13 @@ per commit. Every failure mode fails closed to running all tests.
 import ast
 import gzip
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import sys
+import tempfile
 
 DATA = "/data"
 SRC = "/src"          # sqlglot checkout at the pinned commit, laid down at build
@@ -39,6 +42,30 @@ def load_json_gz(path):
 
 def sha1(text):
     return hashlib.sha1(text.encode()).hexdigest()
+
+
+def import_broken(rel, new_text):
+    """True if the patched module fails to execute at import time.
+
+    Module-level statements (class bodies, top-level assignments) run exactly
+    once at import and can throw (NameError, TypeError...); a per-test line
+    map can never attribute such a failure, so callers fail closed. Imports
+    sqlglot's pinned tree from /src — cached in-process after the first call.
+    """
+    try:
+        if SRC not in sys.path:
+            sys.path.insert(0, SRC)
+        tmp = tempfile.mkdtemp(prefix="selimp")
+        path = os.path.join(tmp, os.path.basename(rel))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        name = "__selcheck__." + os.path.basename(rel)[:-3].replace("-", "_")
+        loader = importlib.machinery.SourceFileLoader(name, path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+        loader.exec_module(mod)
+        return False
+    except BaseException:
+        return True
 
 
 def func_spans(tree):
@@ -420,13 +447,16 @@ def main():
 
         if level_of(old_spans, old_ch) == "module" or level_of(new_spans, new_ch) == "module":
             if rel.startswith("sqlglot/"):
-                # Import-time code belongs to no test's coverage context. Dialect
-                # families get the usage net; base dialect / unknown modules in
-                # the family dirs stay fail-closed inside dialect_usage_select.
-                try:
-                    return dialect_usage_select(rel, e)
-                except KeyError:
+                # Import-time code belongs to no test's coverage context, so a
+                # per-test line map can never attribute it. If the patched
+                # module no longer imports (NameError & friends), the blast
+                # radius is everything that imports sqlglot: fail closed.
+                if import_broken(rel, new_text):
                     raise AllError()
+                # Dialect families get the usage net; base dialect / unknown
+                # modules in the family dirs stay fail-closed inside
+                # dialect_usage_select.
+                return dialect_usage_select(rel, e)
             return flevel()
         return flevel()
 
