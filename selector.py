@@ -221,8 +221,22 @@ def main():
     dumps = load_json_gz(os.path.join(MAPS, "dumps.json.gz"))
     blind_ids = json.load(open(os.path.join(MAPS, "blind.json")))
     blind = {num_of[i] for i in blind_ids if i in num_of}  # numbers
+    try:
+        dnames = json.load(open(os.path.join(MAPS, "dialect_names.json")))
+        famcl = json.load(open(os.path.join(MAPS, "famclosure.json")))
+        mentions = load_json_gz(os.path.join(MAPS, "mentions.json.gz"))
+        rev = {}
+        for tid, ns in mentions.items():
+            for nm in ns:
+                rev.setdefault(nm, set()).add(tid)
+        mentions = None
+    except FileNotFoundError:
+        dnames = None
+        famcl = None
+        rev = {}
     rfiles, rdirs = reads["files"], reads["dirs"]
     lines_cache = {}
+    sqlglot_texts = {}
 
     def to_nums(ids):
         return {num_of[i] for i in ids if i in num_of}
@@ -266,6 +280,93 @@ def main():
             if innermost(spans_list, ln) is None:
                 return "module"
         return "function"
+
+    def dialect_attr_names(e):
+        names = set()
+        for h in e["hunks"]:
+            for raw in h["body"]:
+                if raw:
+                    m3 = re.match(r"^[+-]\s*([A-Za-z_]\w*)\s*[=:]", raw)
+                    if m3:
+                        names.add(m3.group(1))
+        return names
+
+    def family_texts():
+        if not sqlglot_texts:
+            for root, _dirs, files in os.walk(SRC + "/sqlglot"):
+                for f in files:
+                    if not f.endswith(".py"):
+                        continue
+                    rel2 = os.path.relpath(os.path.join(root, f), SRC).replace(os.sep, "/")
+                    try:
+                        with open(os.path.join(root, f), "rb") as fh:
+                            sqlglot_texts[rel2] = fh.read().decode("utf-8", "replace")
+                    except OSError:
+                        continue
+        return sqlglot_texts
+
+    def dialect_usage_select(rel, e):
+        """Module-class-body edit inside a dialect-family dir: candidates =
+        mentions of the whole dialect family ∪ family file-level coverage in
+        all 5 dirs ∪ per-dialect test files ∪ tests covering function-body
+        lines that reference the edited attribute name.
+        Import-time behavior of a base dialect's other modules comes through
+        those modules' own family entries."""
+        if dnames is None:
+            raise AllError()
+        stem = rel.rsplit("/", 1)[-1][:-3]
+        if stem == "dialect":
+            fam = set(sorted(dnames))  # base dialect: everything subclasses it
+        else:
+            fam = set(famcl.get(stem) or ())
+            if not fam:
+                raise AllError()
+            fam.add(stem)
+
+        got = file_level_ids(rel) | blind
+        for m in sorted(fam):
+            ids = set()
+            for n in dnames.get(m, (m,)):
+                ids |= rev.get(n, set())
+            got |= to_nums(ids)
+            for d in DIALECT_DIRS:
+                got |= to_nums(cover.get(f"{d}/{m}.py", ()))
+            got |= set(file_nums.get(f"tests/dialects/test_{m}.py", ()))
+
+        ext_net = {}  # other dialect modules touched at module level by name refs
+
+        def add_member_net(m):
+            ids = set()
+            for n in dnames.get(m, (m,)):
+                ids |= rev.get(n, set())
+            ext_net[m] = to_nums(ids)
+            for d in DIALECT_DIRS:
+                ext_net[m] |= to_nums(cover.get(f"{d}/{m}.py", ()))
+            ext_net[m] |= set(file_nums.get(f"tests/dialects/test_{m}.py", ()))
+
+        for nm in dialect_attr_names(e):
+            pat = re.compile(r"\b" + re.escape(nm) + r"\b")
+            for f2, txt in family_texts().items():
+                for ln, line in enumerate(txt.splitlines(), 1):
+                    if pat.search(line):
+                        sp2 = spans.get(f2)
+                        span = innermost(sp2, ln) if sp2 else None
+                        if span is None:
+                            # module/class-body reference in another file
+                            if f2.startswith("sqlglot/dialects/") or any(
+                                f2.startswith(d + "/") for d in DIALECT_DIRS
+                            ):
+                                m2 = f2.rsplit("/", 1)[-1][:-3]
+                                if m2 not in fam and m2 != "dialect" and m2 not in ext_net:
+                                    add_member_net(m2)
+                            else:
+                                # module-level use in non-family library code
+                                raise AllError()
+                        else:
+                            got |= to_nums(line_ids(f2, span))
+        for v in ext_net.values():
+            got |= v
+        return got
 
     def line_ids(rel, span):
         lm = lines_cache.get(rel)
@@ -319,12 +420,15 @@ def main():
 
         if level_of(old_spans, old_ch) == "module" or level_of(new_spans, new_ch) == "module":
             if rel.startswith("sqlglot/"):
-                # Import-time code (class attrs, top-level statements) runs once
-                # at module import and belongs to no test's coverage context, so
-                # a per-test line map can never attribute its blast radius.
-                # Fail closed: run everything.
-                raise AllError()
+                # Import-time code belongs to no test's coverage context. Dialect
+                # families get the usage net; base dialect / unknown modules in
+                # the family dirs stay fail-closed inside dialect_usage_select.
+                try:
+                    return dialect_usage_select(rel, e)
+                except KeyError:
+                    raise AllError()
             return flevel()
+        return flevel()
 
         # Function-level coverage uses OLD-side lines only: the hunk's old
         # context sits in the same old function as any insertion, and new-file
