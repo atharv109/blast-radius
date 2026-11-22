@@ -318,6 +318,12 @@ def main():
             return got
 
         if level_of(old_spans, old_ch) == "module" or level_of(new_spans, new_ch) == "module":
+            if rel.startswith("sqlglot/"):
+                # Import-time code (class attrs, top-level statements) runs once
+                # at module import and belongs to no test's coverage context, so
+                # a per-test line map can never attribute its blast radius.
+                # Fail closed: run everything.
+                raise AllError()
             return flevel()
 
         # Function-level coverage uses OLD-side lines only: the hunk's old
